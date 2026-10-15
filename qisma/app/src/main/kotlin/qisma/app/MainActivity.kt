@@ -2,6 +2,7 @@ package qisma.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
@@ -18,101 +19,162 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.room.Room
+import kotlinx.coroutines.launch
 import qisma.core.Geo
 import qisma.core.Pt
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val dao = Room.databaseBuilder(applicationContext, AppDb::class.java, "qisma.db").build().dao()
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                MaterialTheme { Surface(Modifier.fillMaxSize()) { QismaScreen() } }
+                MaterialTheme { Surface(Modifier.fillMaxSize()) { QismaApp(dao) } }
             }
         }
     }
 }
 
-data class Heir(val name: String, val weight: String)
-class Result(val error: String?, val poly: List<Pt>?, val pieces: List<List<Pt>>, val targets: List<Double>, val names: List<String>)
-
 private val colors = listOf(0xFF66BB6A, 0xFFFFB74D, 0xFF64B5F6, 0xFFBA68C8, 0xFFE57373, 0xFF4DB6AC, 0xFFFFD54F, 0xFF90A4AE).map { Color(it) }
-
-private fun parseNums(s: String): List<Double>? {
-    val t = s.map { c -> if (c in '٠'..'٩') ('0' + (c - '٠')) else c }.joinToString("").replace('٫', '.')
-    return t.split(Regex("[,،;\\s]+")).filter { it.isNotBlank() }.map { it.toDoubleOrNull() ?: return null }
-}
-
 private fun f(v: Double) = String.format(Locale.US, "%.2f", v)
 
-fun compute(sides: String, diags: String, heirs: List<Heir>, vertical: Boolean): Result {
-    fun err(m: String) = Result(m, null, emptyList(), emptyList(), emptyList())
-    val s = parseNums(sides) ?: return err("الأضلاع تحتوي قيمة غير رقمية")
-    val d = parseNums(diags) ?: return err("الأقطار تحتوي قيمة غير رقمية")
-    if (s.size < 2) return err("أدخل ضلعين متتاليين على الأقل")
-    if (s.any { it <= 0 } || d.any { it <= 0 }) return err("كل القياسات يجب أن تكون أكبر من صفر")
-    val n = s.size + 1
-    if (d.size < n - 2) return err("القياسات ناقصة: لتحديد شكل من $n نقاط أدخل ${n - 2} قطرًا من النقطة 0 (لديك ${d.size})، وإلا لا يتعين الشكل والمساحة بصورة فريدة")
-    if (d.size > n - 2) return err("أقطار زائدة: المطلوب ${n - 2} فقط")
-    val poly = Geo.fromFan(s, d) ?: return err("القياسات متعارضة: مثلث مستحيل (مجموع ضلعين أقل من الثالث)")
-    if (!Geo.isSimple(poly)) return err("حدود الأرض متقاطعة، راجع القياسات")
-    val w = heirs.map { it.weight.let { x -> parseNums(x)?.singleOrNull() } }
-    if (heirs.isEmpty() || w.any { it == null || it <= 0 }) return Result(null, poly, emptyList(), emptyList(), emptyList())
-    val total = Geo.area(poly); val sum = w.sumOf { it!! }
-    val targets = w.map { total * it!! / sum }
-    val pieces = if (vertical) Geo.divideStrips(poly, 0.0, 1.0, targets) else Geo.divideStrips(poly, 1.0, 0.0, targets)
-    return Result(null, poly, pieces, targets, heirs.map { it.name })
+@Composable
+fun QismaApp(dao: ProjectDao) {
+    var editing by remember { mutableStateOf(false) }
+    var currentId by remember { mutableStateOf<Long?>(null) }
+    var data by remember { mutableStateOf(ProjectData.sample()) }
+    var list by remember { mutableStateOf(listOf<ProjectEntity>()) }
+    var msg by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    fun reload() { scope.launch { list = dao.all() } }
+    LaunchedEffect(Unit) { reload() }
+    BackHandler(editing) { editing = false; reload() }
+
+    if (!editing) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("قسمة – مشاريعي", style = MaterialTheme.typography.headlineSmall)
+            Button({ data = ProjectData.sample(); currentId = null; msg = ""; editing = true }, Modifier.fillMaxWidth()) { Text("مشروع جديد") }
+            if (list.isEmpty()) Text("لا توجد مشاريع محفوظة بعد")
+            list.forEach { p ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(p.name, style = MaterialTheme.typography.titleMedium)
+                        Text(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(p.updatedAt)), style = MaterialTheme.typography.bodySmall)
+                        Row {
+                            TextButton({ data = ProjectData.fromJson(p.json); currentId = p.id; msg = ""; editing = true }) { Text("فتح") }
+                            TextButton({ scope.launch { dao.delete(p.id); list = dao.all() } }) { Text("حذف") }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        Editor(data, { data = it }, msg, onBack = { editing = false; reload() }) { asNew ->
+            scope.launch {
+                val now = System.currentTimeMillis()
+                var d = data
+                if (asNew && currentId != null) { d = d.copy(name = d.name + " (نسخة)"); data = d }
+                val id = currentId
+                if (asNew || id == null) currentId = dao.insert(ProjectEntity(name = d.name, updatedAt = now, json = d.toJson()))
+                else dao.update(ProjectEntity(id, d.name, now, d.toJson()))
+                msg = "تم الحفظ ✓"
+            }
+        }
+    }
 }
 
 @Composable
-fun QismaScreen() {
-    var sides by remember { mutableStateOf("20, 10, 20") }
-    var diags by remember { mutableStateOf("22.3607, 10") }
-    var vertical by remember { mutableStateOf(false) }
-    val heirs = remember { mutableStateListOf(Heir("وارث 1", "2"), Heir("وارث 2", "1"), Heir("وارث 3", "1")) }
-    var res by remember { mutableStateOf<Result?>(null) }
-    LaunchedEffect(Unit) { res = compute(sides, diags, heirs, vertical) }
+fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack: () -> Unit, onSave: (Boolean) -> Unit) {
+    val res = remember(d) { compute(d) }
+    fun tf(v: String, label: String, m: Modifier = Modifier.fillMaxWidth(), set: (String) -> Unit) =
+        @Composable { OutlinedTextField(v, set, label = { Text(label) }, modifier = m) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("قسمة – Qisma", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onBack) { Text("‹ المشاريع") }
+            Text("قسمة – Qisma", style = MaterialTheme.typography.titleLarge)
+        }
+        tf(d.name, "اسم المشروع") { onChange(d.copy(name = it)) }()
+        tf(d.location, "موقع الأرض") { onChange(d.copy(location = it)) }()
+        tf(d.notes, "ملاحظات الأمين") { onChange(d.copy(notes = it)) }()
         Text("1) قياسات الأرض (بالمتر)", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(sides, { sides = it }, label = { Text("الأضلاع المتتالية: ن0ن1، ن1ن2، ...") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(diags, { diags = it }, label = { Text("الأقطار من النقطة 0: ن0ن2، ن0ن3، ...") }, modifier = Modifier.fillMaxWidth())
-        Text("2) الورثة (الحصة = عدد أسهم، مثل 2 و1 و1)", style = MaterialTheme.typography.titleMedium)
-        heirs.forEachIndexed { i, h ->
+        tf(d.sides, "الأضلاع المتتالية: ن0ن1، ن1ن2، ...") { onChange(d.copy(sides = it)) }()
+        tf(d.diags, "الأقطار من النقطة 0: ن0ن2، ن0ن3، ...") { onChange(d.copy(diags = it)) }()
+
+        Text("2) الورثة (الحصة = عدد أسهم)", style = MaterialTheme.typography.titleMedium)
+        d.heirs.forEachIndexed { i, h ->
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(h.name, { heirs[i] = h.copy(name = it) }, label = { Text("الاسم") }, modifier = Modifier.weight(2f))
-                OutlinedTextField(h.weight, { heirs[i] = h.copy(weight = it) }, label = { Text("الحصة") }, modifier = Modifier.weight(1f))
-                TextButton({ heirs.removeAt(i) }) { Text("حذف") }
+                tf("${h.name}", "الاسم (${i + 1})", Modifier.weight(2f)) { v -> onChange(d.copy(heirs = d.heirs.toMutableList().also { it[i] = h.copy(name = v) })) }()
+                tf(h.weight, "الحصة", Modifier.weight(1f)) { v -> onChange(d.copy(heirs = d.heirs.toMutableList().also { it[i] = h.copy(weight = v) })) }()
+                TextButton({ onChange(d.copy(heirs = d.heirs.toMutableList().also { it.removeAt(i) })) }) { Text("حذف") }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton({ heirs.add(Heir("وارث ${heirs.size + 1}", "1")) }) { Text("إضافة وارث") }
-            OutlinedButton({ vertical = !vertical }) { Text(if (vertical) "اتجاه القطع: أفقي" else "اتجاه القطع: رأسي") }
+            OutlinedButton({ onChange(d.copy(heirs = d.heirs + Heir("وارث ${d.heirs.size + 1}", "1"))) }) { Text("إضافة وارث") }
+            OutlinedButton({ onChange(d.copy(vertical = !d.vertical)) }) { Text(if (d.vertical) "القطع: أفقي" else "القطع: رأسي") }
         }
-        Button({ res = compute(sides, diags, heirs, vertical) }, Modifier.fillMaxWidth()) { Text("احسب وقسّم") }
 
-        res?.let { r ->
-            if (r.error != null) Text("⚠ " + r.error, color = MaterialTheme.colorScheme.error)
-            r.poly?.let { p ->
-                Text("المساحة الإجمالية: ${f(Geo.area(p))} م²   |   المحيط: ${f(Geo.perimeter(p))} م")
-                Text("(الدقة الفعلية بقدر دقة قياساتك الميدانية)", style = MaterialTheme.typography.bodySmall)
-                Canvas(Modifier.fillMaxWidth().height(260.dp)) {
-                    val minX = p.minOf { it.x }; val maxX = p.maxOf { it.x }
-                    val minY = p.minOf { it.y }; val maxY = p.maxOf { it.y }
-                    val sc = minOf(size.width / (maxX - minX), size.height / (maxY - minY)) * 0.92f
-                    fun o(q: Pt) = Offset(((q.x - minX) * sc + size.width * 0.04).toFloat(), (size.height - (q.y - minY) * sc - size.height * 0.04).toFloat())
-                    fun path(pl: List<Pt>) = Path().apply { pl.forEachIndexed { i, q -> if (i == 0) moveTo(o(q).x, o(q).y) else lineTo(o(q).x, o(q).y) }; close() }
-                    if (r.pieces.isEmpty()) drawPath(path(p), Color(0xFF66BB6A))
-                    r.pieces.forEachIndexed { i, pc -> drawPath(path(pc), colors[i % colors.size]); drawPath(path(pc), Color.DarkGray, style = Stroke(2f)) }
-                    drawPath(path(p), Color.Black, style = Stroke(5f))
+        Text("3) الطرق والخصميات", style = MaterialTheme.typography.titleMedium)
+        d.roads.forEachIndexed { i, r ->
+            fun up(n: RoadUi) = onChange(d.copy(roads = d.roads.toMutableList().also { it[i] = n }))
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    tf(r.name, "اسم/رقم الطريق") { up(r.copy(name = it)) }()
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tf(r.width, "العرض م", Modifier.weight(1f)) { up(r.copy(width = it)) }()
+                        tf(r.length, "الطول م", Modifier.weight(1f)) { up(r.copy(length = it)) }()
+                    }
+                    tf(r.ben, "أرقام المستفيدين (مثل 1، 2)") { up(r.copy(ben = it)) }()
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton({ up(r.copy(type = (r.type + 1) % 4)) }) { Text(roadTypes[r.type]) }
+                        OutlinedButton({ up(r.copy(burdenAll = !r.burdenAll)) }) { Text(if (r.burdenAll) "العبء: الجميع" else "العبء: المستفيدون") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton({ up(r.copy(deducted = !r.deducted)) }) { Text(if (r.deducted) "تُخصم" else "لا تُخصم") }
+                        OutlinedButton({ up(r.copy(status = (r.status + 1) % 3)) }) { Text(roadStatus[r.status]) }
+                        TextButton({ onChange(d.copy(roads = d.roads.toMutableList().also { it.removeAt(i) })) }) { Text("حذف") }
+                    }
                 }
-                r.pieces.forEachIndexed { i, pc ->
-                    val a = Geo.area(pc)
-                    Text("${i + 1}. ${r.names[i]}: مستهدفة ${f(r.targets[i])} | فعلية ${f(a)} | فرق ${f(a - r.targets[i])} م²")
-                }
-                if (r.pieces.isNotEmpty()) Text("مجموع القطع: ${f(r.pieces.sumOf { Geo.area(it) })} م²  (يجب أن يساوي الإجمالي)", style = MaterialTheme.typography.bodySmall)
             }
+        }
+        OutlinedButton({ onChange(d.copy(roads = d.roads + RoadUi("طريق ${d.roads.size + 1}", 0, "5", "10", "", true, true, 0))) }) { Text("إضافة طريق") }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button({ onSave(false) }, Modifier.weight(1f)) { Text("حفظ") }
+            OutlinedButton({ onSave(true) }, Modifier.weight(1f)) { Text("حفظ كنسخة جديدة") }
+        }
+        if (msg.isNotEmpty()) Text(msg)
+
+        if (res.error != null) Text("⚠ " + res.error, color = MaterialTheme.colorScheme.error)
+        res.poly?.let { p ->
+            Text("المساحة الإجمالية: ${f(Geo.area(p))} م²  |  المحيط: ${f(Geo.perimeter(p))} م  |  الطرق المخصومة: ${f(res.roadsTotal)} م²")
+            Text("(الدقة الفعلية بقدر دقة قياساتك الميدانية)", style = MaterialTheme.typography.bodySmall)
+            val ratio = ((p.maxOf { it.x } - p.minOf { it.x }) / (p.maxOf { it.y } - p.minOf { it.y }).coerceAtLeast(1e-9)).toFloat().coerceIn(0.5f, 3f)
+            Canvas(Modifier.fillMaxWidth().aspectRatio(ratio)) {
+                val minX = p.minOf { it.x }; val maxX = p.maxOf { it.x }; val minY = p.minOf { it.y }; val maxY = p.maxOf { it.y }
+                val sc = minOf(size.width / (maxX - minX), size.height / (maxY - minY)) * 0.96f
+                fun o(q: Pt) = Offset(((q.x - minX) * sc + size.width * 0.02).toFloat(), (size.height - (q.y - minY) * sc - size.height * 0.02).toFloat())
+                fun path(pl: List<Pt>) = Path().apply { pl.forEachIndexed { i, q -> if (i == 0) moveTo(o(q).x, o(q).y) else lineTo(o(q).x, o(q).y) }; close() }
+                if (res.pieces.isEmpty()) drawPath(path(p), colors[0])
+                res.pieces.forEachIndexed { i, pc ->
+                    if (pc.size >= 3) {
+                        val isRoad = i >= res.rows.size
+                        drawPath(path(pc), if (isRoad) Color.Gray else colors[i % colors.size]); drawPath(path(pc), Color.DarkGray, style = Stroke(2f))
+                    }
+                }
+                drawPath(path(p), Color.Black, style = Stroke(5f))
+            }
+            res.rows.forEachIndexed { i, r ->
+                val a = Geo.area(res.pieces[i])
+                Text("${i + 1}. ${r.name}: الكاملة ${f(r.gross)} − طرق ${f(r.burden)} = مستهدفة ${f(r.net)} | فعلية ${f(a)} | فرق ${f(a - r.net)} م²")
+            }
+            if (res.roadsTotal > 0) Text("القطعة الرمادية = الطرق (${f(res.roadsTotal)} م²). موضعها مبدئي في طرف الأرض، وتحديد موضعها يدويًا في المرحلة القادمة.", style = MaterialTheme.typography.bodySmall)
+            res.warnings.forEach { Text("ℹ $it", style = MaterialTheme.typography.bodySmall) }
+            if (res.pieces.isNotEmpty()) Text("مجموع القطع: ${f(res.pieces.sumOf { Geo.area(it) })} م² (يساوي الإجمالي)", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
