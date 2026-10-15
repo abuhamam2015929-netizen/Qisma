@@ -10,3 +10,4 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with: { gradle-version: "8.7" }
       - run: gradle :core:test --no-daemon
+        working-directory: qisma
