@@ -20,6 +20,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.room.Room
 import kotlinx.coroutines.launch
 import qisma.core.*
@@ -45,6 +47,7 @@ private fun f(v: Double) = String.format(Locale.US, "%.2f", if (kotlin.math.abs(
 @Composable
 fun QismaApp(dao: ProjectDao) {
     var editing by remember { mutableStateOf(false) }
+    var gps by remember { mutableStateOf(false) }
     var currentId by remember { mutableStateOf<Long?>(null) }
     var data by remember { mutableStateOf(ProjectData.sample()) }
     var list by remember { mutableStateOf(listOf<ProjectEntity>()) }
@@ -53,6 +56,7 @@ fun QismaApp(dao: ProjectDao) {
     fun reload() { scope.launch { list = dao.all() } }
     LaunchedEffect(Unit) { reload() }
     BackHandler(editing) { editing = false; reload() }
+    BackHandler(gps) { gps = false }
 
     if (!editing) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -73,7 +77,8 @@ fun QismaApp(dao: ProjectDao) {
             }
         }
     } else {
-        Editor(data, { data = it }, msg, onBack = { editing = false; reload() }) { asNew ->
+        if (gps) GpsScreen(data, { data = it }) { gps = false }
+        else Editor(data, { data = it }, msg, onBack = { editing = false; reload() }, onGps = { gps = true }) { asNew ->
             scope.launch {
                 val now = System.currentTimeMillis()
                 var d = data
@@ -88,7 +93,7 @@ fun QismaApp(dao: ProjectDao) {
 }
 
 @Composable
-fun DrawParcel(poly: List<Pt>, pieces: List<Piece>) {
+fun DrawParcel(poly: List<Pt>, pieces: List<Piece>, name: (Int) -> String = { "" }) {
     val minX = poly.minOf { it.x }; val maxX = poly.maxOf { it.x }; val minY = poly.minOf { it.y }; val maxY = poly.maxOf { it.y }
     val ratio = ((maxX - minX) / (maxY - minY).coerceAtLeast(1e-9)).toFloat().coerceIn(0.5f, 3f)
     Canvas(Modifier.fillMaxWidth().aspectRatio(ratio)) {
@@ -103,11 +108,33 @@ fun DrawParcel(poly: List<Pt>, pieces: List<Piece>) {
             }
         }
         drawPath(path(poly), Color.Black, style = Stroke(5f))
+        val nc = drawContext.canvas.nativeCanvas
+        val tp = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.BLACK; textAlign = android.graphics.Paint.Align.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD }
+        val ap = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.BLACK; textAlign = android.graphics.Paint.Align.CENTER; textSize = 10.sp.toPx() }
+        pieces.forEach { pc ->
+            val label = name(pc.owner)
+            if (pc.poly.size >= 3 && label.isNotBlank()) {
+                val pts = pc.poly.map { o(it) }
+                val cx = pts.map { it.x }.average().toFloat(); val cy = pts.map { it.y }.average().toFloat()
+                val bw = pts.maxOf { it.x } - pts.minOf { it.x }; val bh = pts.maxOf { it.y } - pts.minOf { it.y }
+                var fs = 13.sp.toPx(); tp.textSize = fs
+                var w = tp.measureText(label)
+                if (w > bw * 0.92f) { fs = maxOf(9.sp.toPx(), fs * bw * 0.92f / w); tp.textSize = fs; w = tp.measureText(label) }
+                if (w > bw * 0.92f && bh * 0.92f >= w) {
+                    nc.save(); nc.rotate(-90f, cx, cy); nc.drawText(label, cx, cy + fs / 3, tp); nc.restore()
+                } else {
+                    nc.drawText(label, cx, cy + fs / 3, tp)
+                    if (bh > fs * 3.2f) nc.drawText(f(pc.area) + " م²", cx, cy + fs / 3 + fs * 1.25f, ap)
+                }
+            }
+        }
     }
 }
 
 @Composable
-fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack: () -> Unit, onSave: (Boolean) -> Unit) {
+fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack: () -> Unit, onGps: () -> Unit, onSave: (Boolean) -> Unit) {
     val res = remember(d) { compute(d) }
     val ctx = LocalContext.current
     val undo = remember { mutableStateListOf<List<EditUi>>() }
@@ -148,6 +175,7 @@ fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack:
             OutlinedButton({ onChange(d.copy(parcels = d.parcels + ParcelUi("أرض ${d.parcels.size + 1}", "10, 10, 10", "14.1421, 10"))) }) { Text("إضافة أرض") }
             if (d.parcels.size > 1) OutlinedButton({ onChange(d.copy(perParcel = !d.perParcel)) }) { Text(if (d.perParcel) "القسمة: كل أرض على حدة" else "القسمة: جمع الأراضي") }
         }
+        OutlinedButton(onGps, Modifier.fillMaxWidth()) { Text("قياس الأرض بالـGPS (المتر الرقمي) ← ${d.gps.size} نقطة محفوظة") }
         if (d.parcels.size > 1) Text(if (d.perParcel) "كل وارث ينال حصته من كل أرض على حدة." else "تُجمع الأراضي ويُملأ نصيب كل وارث بالتتابع من الأرض الأولى فما بعدها.", style = MaterialTheme.typography.bodySmall)
 
         Text("2) الورثة (الحصة = عدد أسهم)", style = MaterialTheme.typography.titleMedium)
@@ -213,7 +241,7 @@ fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack:
             if (effErr != null) Text("⚠ $effErr", color = MaterialTheme.colorScheme.error)
             res.polys.forEachIndexed { j, poly ->
                 if (d.parcels.size > 1) Text("${d.parcels[j].name}: ${f(Geo.area(poly))} م²", style = MaterialTheme.typography.titleSmall)
-                DrawParcel(poly, shown.filter { it.parcel == j })
+                DrawParcel(poly, shown.filter { it.parcel == j }, nm)
             }
             if (sel != null) {
                 Text("4) النتيجة حسب التقسيم المختار", style = MaterialTheme.typography.titleMedium)
@@ -283,8 +311,15 @@ fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack:
                         Text(listOf("النمط: متناسبة (قطع متشابهة)", "النمط: أحدد عرض كل قطعة من الأعلى", "النمط: أحدد عرض كل قطعة من الأسفل")[pp.mode % 3])
                     }
                     if (pp.mode != 0) tf(pp.tops, "عرض كل قطعة من ${if (pp.mode == 1) "الأعلى" else "الأسفل"} بالمتر، مفصولة بفواصل، عدا الأخيرة") { upPlan(pp.copy(tops = it)) }()
+                    Text("عدد العلائم على كل خط (يشمل علامتي الطرفين):", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(2, 3, 4, 5, 6, 8, 10).forEach { n ->
+                            if (pp.stations == n) Button({ upPlan(pp.copy(stations = n)) }, Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("$n") }
+                            else OutlinedButton({ upPlan(pp.copy(stations = n)) }, Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("$n") }
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        tf(pp.stations.toString(), "عدد العلائم على كل خط (بالطرفين)", Modifier.weight(1f)) { upPlan(pp.copy(stations = it.toIntOrNull() ?: pp.stations)) }()
+                        tf(pp.stations.toString(), "أو اكتب عددًا آخر", Modifier.weight(1f)) { upPlan(pp.copy(stations = it.toIntOrNull() ?: pp.stations)) }()
                         tf(pp.prec, "دقة القياس (سم)", Modifier.weight(1f)) { upPlan(pp.copy(prec = it)) }()
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -295,7 +330,7 @@ fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack:
                     if (pe != null) Text("⚠ $pe", color = MaterialTheme.colorScheme.error)
                     if (pl != null && pl.error == null) {
                         val prec = parseNums(pp.prec)?.singleOrNull() ?: 5.0
-                        DrawParcel(res.polys[jp], pl.pieces.mapIndexed { k, p -> Piece(jp, planOut.owners[k], p, planOut.targets[k]) })
+                        DrawParcel(res.polys[jp], pl.pieces.mapIndexed { k, p -> Piece(jp, planOut.owners[k], p, planOut.targets[k]) }, nm)
                         pl.pieces.indices.forEach { k ->
                             Text("قطعة ${k + 1} (${nm(planOut.owners[k])}): عرض الأعلى ${f(pl.widths[k].first)} م | عرض الأسفل ${f(pl.widths[k].second)} م | المساحة ${f(Geo.area(pl.pieces[k]))} م²")
                         }

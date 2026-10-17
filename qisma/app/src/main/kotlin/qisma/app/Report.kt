@@ -38,7 +38,7 @@ private class PdfW(val doc: PdfDocument) {
         ensure(lay.height + gap)
         cv!!.save(); cv!!.translate(m, y); lay.draw(cv!!); cv!!.restore(); y += lay.height + gap
     }
-    fun drawParcel(poly: List<Pt>, pieces: List<Piece>) {
+    fun drawParcel(poly: List<Pt>, pieces: List<Piece>, nameOf: (Int) -> String) {
         val minX = poly.minOf { it.x }; val maxX = poly.maxOf { it.x }; val minY = poly.minOf { it.y }; val maxY = poly.maxOf { it.y }
         val rx = (maxX - minX).coerceAtLeast(1e-9); val ry = (maxY - minY).coerceAtLeast(1e-9)
         val boxW = 300f; val boxH = (boxW * ry / rx).toFloat().coerceIn(80f, 260f)
@@ -54,7 +54,9 @@ private class PdfW(val doc: PdfDocument) {
             if (pc.poly.size >= 3) {
                 fill.color = if (pc.owner < 0) Color.GRAY else palette[pc.owner % palette.size]
                 c.drawPath(path(pc.poly), fill); c.drawPath(path(pc.poly), line)
-                c.drawText("${k + 1}", pc.poly.map { px(it) }.average().toFloat(), pc.poly.map { py(it) }.average().toFloat(), lab)
+                val nmv = nameOf(pc.owner); val bwp = pc.poly.maxOf { px(it) } - pc.poly.minOf { px(it) }
+                val txt = if (nmv.isNotBlank() && lab.measureText(nmv) <= bwp * 0.95f) nmv else "${k + 1}"
+                c.drawText(txt, pc.poly.map { px(it) }.average().toFloat(), pc.poly.map { py(it) }.average().toFloat(), lab)
             }
         }
         line.strokeWidth = 2f; line.color = Color.BLACK; c.drawPath(path(poly), line)
@@ -96,7 +98,7 @@ fun buildPdf(ctx: Context, d: ProjectData, res: Result, pieces: List<Piece>, lab
     res.polys.forEachIndexed { j, p ->
         val pj = pieces.filter { it.parcel == j }
         w.text("${d.parcels[j].name}", 12f, true)
-        w.drawParcel(p, pj)
+        w.drawParcel(p, pj, nm)
         pj.forEachIndexed { k, pc ->
             w.text("قطعة ${j + 1}-${k + 1} (لون ${k + 1}): ${nm(pc.owner)} | المساحة ${f(pc.area)} م² | المحيط ${f(Geo.perimeter(pc.poly))} م | الحدود: ${edgeLens(pc.poly).joinToString(" ، ") { f(it) }} م", 10f)
         }

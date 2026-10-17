@@ -12,10 +12,11 @@ data class PlanUi(val on: Boolean = false, val parcel: Int = 0, val mode: Int = 
                   val prec: String = "5", val rev: Boolean = false, val use: Boolean = false)
 data class EditUi(val parcel: Int, val cut: Int, val delta: Double)
 data class ProjectData(val name: String, val location: String, val notes: String, val parcels: List<ParcelUi>,
-                       val perParcel: Boolean, val cand: Int, val heirs: List<Heir>, val roads: List<RoadUi>, val edits: List<EditUi> = emptyList(), val plan: PlanUi = PlanUi()) {
+                       val perParcel: Boolean, val cand: Int, val heirs: List<Heir>, val roads: List<RoadUi>, val edits: List<EditUi> = emptyList(), val plan: PlanUi = PlanUi(), val gps: List<GpsPoint> = emptyList()) {
     fun toJson(): String = JSONObject().apply {
         put("name", name); put("location", location); put("notes", notes); put("per", perParcel); put("cand", cand)
         put("plan", JSONObject().put("on", plan.on).put("parcel", plan.parcel).put("mode", plan.mode).put("tops", plan.tops).put("st", plan.stations).put("prec", plan.prec).put("rev", plan.rev).put("use", plan.use))
+        put("gps", JSONArray(gps.map { JSONObject().put("n", it.name).put("la", it.lat).put("lo", it.lon).put("a", it.acc).put("s", it.spread).put("c", it.n) }))
         put("ed", JSONArray(edits.map { JSONObject().put("p", it.parcel).put("c", it.cut).put("d", it.delta) }))
         put("parcels", JSONArray(parcels.map { JSONObject().put("n", it.name).put("s", it.sides).put("d", it.diags) }))
         put("heirs", JSONArray(heirs.map { JSONObject().put("n", it.name).put("w", it.weight) }))
@@ -31,6 +32,8 @@ data class ProjectData(val name: String, val location: String, val notes: String
             val h = o.getJSONArray("heirs"); val r = o.getJSONArray("roads")
             val pj = o.optJSONObject("plan")
             val plan = if (pj == null) PlanUi() else PlanUi(pj.optBoolean("on"), pj.optInt("parcel"), pj.optInt("mode"), pj.optString("tops"), pj.optInt("st", 6), pj.optString("prec", "5"), pj.optBoolean("rev"), pj.optBoolean("use"))
+            val gj = o.optJSONArray("gps")
+            val gps = if (gj == null) emptyList() else (0 until gj.length()).map { gj.getJSONObject(it).let { x -> GpsPoint(x.getString("n"), x.getDouble("la"), x.getDouble("lo"), x.getDouble("a"), x.getDouble("s"), x.getInt("c")) } }
             val ed = o.optJSONArray("ed")
             val edits = if (ed == null) emptyList() else (0 until ed.length()).map { ed.getJSONObject(it).let { x -> EditUi(x.getInt("p"), x.getInt("c"), x.getDouble("d")) } }
             val parcels = if (o.has("parcels")) o.getJSONArray("parcels").let { a ->
@@ -39,7 +42,7 @@ data class ProjectData(val name: String, val location: String, val notes: String
             return ProjectData(o.optString("name"), o.optString("location"), o.optString("notes"), parcels, o.optBoolean("per", false), o.optInt("cand", 0),
                 (0 until h.length()).map { h.getJSONObject(it).let { x -> Heir(x.getString("n"), x.getString("w")) } },
                 (0 until r.length()).map { r.getJSONObject(it).let { x -> RoadUi(x.getString("n"), x.getInt("t"), x.getString("w"), x.getString("l"),
-                    x.getString("b"), x.getBoolean("all"), x.getBoolean("d"), x.getInt("s"), x.optInt("pc", 0)) } }, edits, plan)
+                    x.getString("b"), x.getBoolean("all"), x.getBoolean("d"), x.getInt("s"), x.optInt("pc", 0)) } }, edits, plan, gps)
         }
     }
 }
