@@ -2,7 +2,7 @@ plugins { id("com.android.application"); kotlin("android"); id("com.google.devto
 android {
     namespace = "qisma.app"
     compileSdk = 34
-    defaultConfig { applicationId = "app.qisma"; minSdk = 24; targetSdk = 34; versionCode = 1; versionName = "0.4" }
+    defaultConfig { applicationId = "app.qisma"; minSdk = 24; targetSdk = 34; versionCode = 1; versionName = "0.5" }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

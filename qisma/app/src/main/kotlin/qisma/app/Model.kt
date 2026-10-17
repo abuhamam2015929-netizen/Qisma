@@ -8,10 +8,12 @@ data class Heir(val name: String, val weight: String)
 data class ParcelUi(val name: String, val sides: String, val diags: String)
 data class RoadUi(val name: String, val type: Int, val width: String, val length: String, val ben: String,
                   val burdenAll: Boolean, val deducted: Boolean, val status: Int, val parcel: Int)
+data class EditUi(val parcel: Int, val cut: Int, val delta: Double)
 data class ProjectData(val name: String, val location: String, val notes: String, val parcels: List<ParcelUi>,
-                       val perParcel: Boolean, val cand: Int, val heirs: List<Heir>, val roads: List<RoadUi>) {
+                       val perParcel: Boolean, val cand: Int, val heirs: List<Heir>, val roads: List<RoadUi>, val edits: List<EditUi> = emptyList()) {
     fun toJson(): String = JSONObject().apply {
         put("name", name); put("location", location); put("notes", notes); put("per", perParcel); put("cand", cand)
+        put("ed", JSONArray(edits.map { JSONObject().put("p", it.parcel).put("c", it.cut).put("d", it.delta) }))
         put("parcels", JSONArray(parcels.map { JSONObject().put("n", it.name).put("s", it.sides).put("d", it.diags) }))
         put("heirs", JSONArray(heirs.map { JSONObject().put("n", it.name).put("w", it.weight) }))
         put("roads", JSONArray(roads.map { JSONObject().put("n", it.name).put("t", it.type).put("w", it.width).put("l", it.length)
@@ -24,13 +26,15 @@ data class ProjectData(val name: String, val location: String, val notes: String
         fun fromJson(s: String): ProjectData {
             val o = JSONObject(s)
             val h = o.getJSONArray("heirs"); val r = o.getJSONArray("roads")
+            val ed = o.optJSONArray("ed")
+            val edits = if (ed == null) emptyList() else (0 until ed.length()).map { ed.getJSONObject(it).let { x -> EditUi(x.getInt("p"), x.getInt("c"), x.getDouble("d")) } }
             val parcels = if (o.has("parcels")) o.getJSONArray("parcels").let { a ->
                 (0 until a.length()).map { a.getJSONObject(it).let { x -> ParcelUi(x.getString("n"), x.getString("s"), x.getString("d")) } }
             } else listOf(ParcelUi("أرض 1", o.getString("sides"), o.getString("diags")))
             return ProjectData(o.optString("name"), o.optString("location"), o.optString("notes"), parcels, o.optBoolean("per", false), o.optInt("cand", 0),
                 (0 until h.length()).map { h.getJSONObject(it).let { x -> Heir(x.getString("n"), x.getString("w")) } },
                 (0 until r.length()).map { r.getJSONObject(it).let { x -> RoadUi(x.getString("n"), x.getInt("t"), x.getString("w"), x.getString("l"),
-                    x.getString("b"), x.getBoolean("all"), x.getBoolean("d"), x.getInt("s"), x.optInt("pc", 0)) } })
+                    x.getString("b"), x.getBoolean("all"), x.getBoolean("d"), x.getInt("s"), x.optInt("pc", 0)) } }, edits)
         }
     }
 }
@@ -40,7 +44,7 @@ val roadStatus = listOf("مقترح", "معتمد", "يحتاج مراجعة")
 
 class Row(val name: String, val gross: Double, val burden: Double, val net: Double)
 class Result(val error: String?, val polys: List<List<Pt>>, val cands: List<Candidate>, val rows: List<Row>,
-             val roadsTotal: Double, val warnings: List<String>, val total: Double)
+             val roadsTotal: Double, val warnings: List<String>, val total: Double, val parcels: List<ParcelIn> = emptyList())
 
 fun parseNums(s: String): List<Double>? {
     val t = s.map { c -> if (c in '٠'..'٩') ('0' + (c - '٠')) else c }.joinToString("").replace('٫', '.')
@@ -93,5 +97,5 @@ fun compute(d: ProjectData): Result {
         rows = d.heirs.indices.map { i -> Row(d.heirs[i].name, per.sumOf { it.shares[i].gross }, per.sumOf { it.shares[i].roadBurden }, per.sumOf { it.shares[i].net }) }
         cands = Candidates.generate(parcels, null, per.map { r -> r.shares.map { it.net } })
     }
-    return Result(null, polys, cands, rows, roadArea.sum(), warns.distinct(), total)
+    return Result(null, polys, cands, rows, roadArea.sum(), warns.distinct(), total, parcels)
 }

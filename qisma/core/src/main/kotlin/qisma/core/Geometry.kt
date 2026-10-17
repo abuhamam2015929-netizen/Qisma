@@ -125,4 +125,20 @@ object Geo {
         }
         return c
     }
+
+    /** مواضع خطوط القطع (n·x=c) لتحقيق مساحات targets بالتتابع؛ n وحدة. */
+    fun stripOffsets(p: List<Pt>, ux: Double, uy: Double, targets: List<Double>): List<Double> {
+        val res = mutableListOf<Double>(); var rest = p
+        for (i in 0 until targets.size - 1) { val c = offsetForArea(rest, ux, uy, targets[i]); res += c; rest = clip(rest, -ux, -uy, -c) }
+        return res
+    }
+
+    /** يبني القطع من مواضع الخطوط (تصاعديًا). عدد القطع = عدد الخطوط + 1. */
+    fun piecesFromOffsets(p: List<Pt>, ux: Double, uy: Double, cuts: List<Double>): List<List<Pt>> =
+        (0..cuts.size).map { k ->
+            var poly = p
+            if (k > 0) poly = clip(poly, -ux, -uy, -cuts[k - 1])
+            if (k < cuts.size) poly = clip(poly, ux, uy, cuts[k])
+            poly
+        }
 }

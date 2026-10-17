@@ -16,14 +16,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import kotlinx.coroutines.launch
-import qisma.core.Geo
-import qisma.core.Pt
-import qisma.core.Piece
+import qisma.core.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -110,6 +109,13 @@ fun DrawParcel(poly: List<Pt>, pieces: List<Piece>) {
 @Composable
 fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack: () -> Unit, onSave: (Boolean) -> Unit) {
     val res = remember(d) { compute(d) }
+    val ctx = LocalContext.current
+    val undo = remember { mutableStateListOf<List<EditUi>>() }
+    val redo = remember { mutableStateListOf<List<EditUi>>() }
+    var mp by remember { mutableStateOf(0) }
+    var mc by remember { mutableStateOf(0) }
+    var amt by remember { mutableStateOf("0.5") }
+    var info by remember { mutableStateOf("") }
     fun tf(v: String, label: String, m: Modifier = Modifier.fillMaxWidth(), set: (String) -> Unit) =
         @Composable { OutlinedTextField(v, set, label = { Text(label) }, modifier = m) }
 
@@ -191,30 +197,92 @@ fun Editor(d: ProjectData, onChange: (ProjectData) -> Unit, msg: String, onBack:
             Text("إجمالي الأراضي: ${f(res.total)} م²  |  الطرق المخصومة: ${f(res.roadsTotal)} م²")
             Text("(الدقة الفعلية بقدر دقة قياساتك الميدانية)", style = MaterialTheme.typography.bodySmall)
             val sel = res.cands.getOrNull(d.cand.coerceIn(0, (res.cands.size - 1).coerceAtLeast(0)))
+            val eds = d.edits.map { ManualEdit(it.parcel, it.cut, it.delta) }
+            val eff = if (sel == null) null else Edits.apply(res.parcels, sel, eds)
+            val effErr = eff?.error
+            val shown = eff?.pieces ?: sel?.pieces ?: emptyList()
+            val nm = { o: Int -> if (o < 0) "طريق" else d.heirs.getOrNull(o)?.name ?: "؟" }
+            if (effErr != null) Text("⚠ $effErr", color = MaterialTheme.colorScheme.error)
             res.polys.forEachIndexed { j, poly ->
                 if (d.parcels.size > 1) Text("${d.parcels[j].name}: ${f(Geo.area(poly))} م²", style = MaterialTheme.typography.titleSmall)
-                DrawParcel(poly, sel?.pieces?.filter { it.parcel == j } ?: emptyList())
+                DrawParcel(poly, shown.filter { it.parcel == j })
             }
             if (sel != null) {
                 Text("4) النتيجة حسب التقسيم المختار", style = MaterialTheme.typography.titleMedium)
                 res.rows.forEachIndexed { i, r ->
-                    val a = sel.pieces.filter { it.owner == i }.sumOf { it.area }
+                    val a = shown.filter { it.owner == i }.sumOf { it.area }
                     Text("${i + 1}. ${r.name}: الكاملة ${f(r.gross)} − طرق ${f(r.burden)} = مستهدفة ${f(r.net)} | فعلية ${f(a)} | فرق ${f(a - r.net)} م²")
-                    if (d.parcels.size > 1) Text("   " + d.parcels.indices.joinToString(" ، ") { j -> "${d.parcels[j].name}: ${f(sel.pieces.filter { it.owner == i && it.parcel == j }.sumOf { it.area })}" }, style = MaterialTheme.typography.bodySmall)
+                    if (d.parcels.size > 1) Text("   " + d.parcels.indices.joinToString(" ، ") { j -> "${d.parcels[j].name}: ${f(shown.filter { it.owner == i && it.parcel == j }.sumOf { it.area })}" }, style = MaterialTheme.typography.bodySmall)
                 }
-                if (res.roadsTotal > 0) Text("القطع الرمادية = الطرق، وموضعها مبدئي في طرف كل أرض؛ تحديد موضعها يدويًا في الدفعة القادمة.", style = MaterialTheme.typography.bodySmall)
+                if (res.roadsTotal > 0) Text("القطع الرمادية = الطرق، وموضعها مبدئي في طرف كل أرض.", style = MaterialTheme.typography.bodySmall)
                 res.warnings.forEach { Text("ℹ $it", style = MaterialTheme.typography.bodySmall) }
-                Text("مجموع القطع: ${f(sel.pieces.sumOf { it.area })} م² (يساوي إجمالي الأراضي)", style = MaterialTheme.typography.bodySmall)
+                Text("مجموع القطع: ${f(shown.sumOf { it.area })} م² (يساوي إجمالي الأراضي)", style = MaterialTheme.typography.bodySmall)
+
+                Text("5) تعديل خطوط التقسيم يدويًا", style = MaterialTheme.typography.titleMedium)
+                val mpi = mp.coerceIn(0, sel.cuts.lastIndex)
+                val cutCount = sel.cuts[mpi].size
+                if (d.parcels.size > 1) OutlinedButton({ mp = (mpi + 1) % d.parcels.size; mc = 0 }) { Text("الأرض: ${d.parcels[mpi].name}") }
+                if (cutCount == 0) Text("لا توجد خطوط تقسيم في هذه الأرض.", style = MaterialTheme.typography.bodySmall)
+                else {
+                    val mci = mc.coerceIn(0, cutCount - 1)
+                    val pj = sel.pieces.filter { it.parcel == mpi }
+                    OutlinedButton({ mc = (mci + 1) % cutCount }) { Text("الخط ${mci + 1} من $cutCount: بين ${nm(pj[mci].owner)} و ${nm(pj[mci + 1].owner)}") }
+                    tf(amt, "مقدار الإزاحة بالمتر (موجب نحو القطعة التالية، سالب عكسه)") { amt = it }()
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button({
+                            val dl = parseNums(amt)?.singleOrNull()
+                            if (dl == null) info = "أدخل رقمًا صالحًا للإزاحة"
+                            else {
+                                val ne = d.edits + EditUi(mpi, mci, dl)
+                                val t = Edits.apply(res.parcels, sel, ne.map { ManualEdit(it.parcel, it.cut, it.delta) })
+                                if (t.error != null) info = "رُفضت الإزاحة: " + t.error
+                                else { undo.add(d.edits); redo.clear(); onChange(d.copy(edits = ne)); info = "تم تطبيق الإزاحة وأُعيد الحساب" }
+                            }
+                        }) { Text("طبّق الإزاحة") }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton({ if (undo.isNotEmpty()) { val pv = undo.removeAt(undo.lastIndex); redo.add(d.edits); onChange(d.copy(edits = pv)) } }) { Text("تراجع") }
+                    OutlinedButton({ if (redo.isNotEmpty()) { val nx = redo.removeAt(redo.lastIndex); undo.add(d.edits); onChange(d.copy(edits = nx)) } }) { Text("إعادة") }
+                    OutlinedButton({ if (d.edits.isNotEmpty()) { undo.add(d.edits); redo.clear(); onChange(d.copy(edits = emptyList())) } }) { Text("مسح التعديلات") }
+                }
+                if (d.edits.isNotEmpty() && effErr == null) {
+                    val prev = Edits.apply(res.parcels, sel, d.edits.dropLast(1).map { ManualEdit(it.parcel, it.cut, it.delta) }).pieces
+                    if (prev != null) {
+                        val ch = res.rows.indices.mapNotNull { i ->
+                            val dl = shown.filter { it.owner == i }.sumOf { it.area } - prev.filter { it.owner == i }.sumOf { it.area }
+                            if (kotlin.math.abs(dl) > 0.005) "${res.rows[i].name}: ${if (dl > 0) "+" else ""}${f(dl)} م²" else null
+                        }
+                        Text("أثر آخر تعديل على الورثة: " + (if (ch.isEmpty()) "لا تأثير" else ch.joinToString(" ، ")), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (info.isNotBlank()) Text(info, style = MaterialTheme.typography.bodySmall)
+
+                Text("6) التقرير والتصدير", style = MaterialTheme.typography.titleMedium)
+                fun export(kind: Int) {
+                    try {
+                        if (effErr != null) { info = "لا يمكن الإصدار: $effErr"; return }
+                        info = when (kind) {
+                            0, 1 -> shareFile(ctx, buildPdf(ctx, d, res, shown, sel.label), "application/pdf", kind == 1)
+                            else -> shareFile(ctx, buildDxf(ctx, d, res, shown), "application/dxf", false)
+                        } ?: ""
+                    } catch (e: Exception) { info = "تعذر الإنشاء: ${e.javaClass.simpleName} ${e.message}" }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button({ export(0) }) { Text("مشاركة PDF") }
+                    OutlinedButton({ export(1) }) { Text("فتح/طباعة PDF") }
+                }
+                OutlinedButton({ export(2) }) { Text("تصدير DXF") }
             }
-            Text("5) التقسيمات المقترحة (مرتبة من الأفضل)", style = MaterialTheme.typography.titleMedium)
-            Text("القيود الإلزامية (مطابقة المساحات، لا فجوات ولا تداخل) تُحكم الصلاحية، والتقييم يفاضل بين الصالح فقط حسب انتظام الأشكال والزوايا الحادة وطول القطع.", style = MaterialTheme.typography.bodySmall)
+            Text("7) التقسيمات المقترحة (مرتبة من الأفضل)", style = MaterialTheme.typography.titleMedium)
+            Text("القيود الإلزامية (مطابقة المساحات، لا فجوات ولا تداخل) تُحكم الصلاحية، والتقييم يفاضل بين الصالح فقط حسب انتظام الأشكال والزوايا الحادة وطول القطع. اختيار تقسيم آخر يمسح التعديلات اليدوية.", style = MaterialTheme.typography.bodySmall)
             res.cands.forEachIndexed { i, c ->
                 val chosen = sel === c
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("${i + 1}. ${c.label}" + if (c.valid) "" else " (غير صالح)", style = MaterialTheme.typography.titleSmall)
                         Text("انحراف أقصى ${f(c.maxDev)} م² | انتظام ${f(c.compact * 100)}% | زوايا حادة ${c.sharp} | طول القطع ${f(c.cutLen)} م | التقييم ${f(c.score)}", style = MaterialTheme.typography.bodySmall)
-                        if (chosen) Text("✓ المختار") else if (c.valid) OutlinedButton({ onChange(d.copy(cand = i)) }) { Text("اختر هذا التقسيم") }
+                        if (chosen) Text("✓ المختار") else if (c.valid) OutlinedButton({ undo.clear(); redo.clear(); mc = 0; onChange(d.copy(cand = i, edits = emptyList())) }) { Text("اختر هذا التقسيم") }
                     }
                 }
             }
