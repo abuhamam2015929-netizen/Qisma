@@ -44,7 +44,8 @@ private class PdfW(val doc: PdfDocument) {
         val boxW = 300f; val boxH = (boxW * ry / rx).toFloat().coerceIn(80f, 260f)
         ensure(boxH + 12)
         val sc = minOf(boxW / rx, boxH / ry).toFloat(); val x0 = m + (w - 2 * m - boxW) / 2
-        fun px(q: Pt) = x0 + ((q.x - minX) * sc).toFloat(); fun py(q: Pt) = y + boxH - ((q.y - minY) * sc).toFloat()
+        fun px(q: Pt): Float = x0 + ((q.x - minX) * sc).toFloat()
+        fun py(q: Pt): Float = y + boxH - ((q.y - minY) * sc).toFloat()
         fun path(pl: List<Pt>) = android.graphics.Path().apply { pl.forEachIndexed { i, q -> if (i == 0) moveTo(px(q), py(q)) else lineTo(px(q), py(q)) }; close() }
         val fill = Paint(Paint.ANTI_ALIAS_FLAG); val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 0.8f; color = Color.DKGRAY }
         val lab = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10f; textAlign = Paint.Align.CENTER; color = Color.BLACK }
