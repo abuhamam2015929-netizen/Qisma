@@ -141,4 +141,18 @@ object Geo {
             if (k < cuts.size) poly = clip(poly, ux, uy, cuts[k])
             poly
         }
+
+    /** طول الخط n·x=c داخل المضلع (تقريب جيد للأشكال المحدبة). */
+    fun chordLength(p: List<Pt>, ux: Double, uy: Double, c: Double): Double {
+        val ts = mutableListOf<Double>()
+        for (i in p.indices) {
+            val a = p[i]; val b = p[(i + 1) % p.size]
+            val fa = ux * a.x + uy * a.y - c; val fb = ux * b.x + uy * b.y - c
+            if ((fa <= 0 && fb > 0) || (fa > 0 && fb <= 0)) {
+                val t = fa / (fa - fb)
+                ts += -uy * (a.x + t * (b.x - a.x)) + ux * (a.y + t * (b.y - a.y))
+            }
+        }
+        return if (ts.size < 2) 0.0 else ts.max() - ts.min()
+    }
 }

@@ -8,11 +8,14 @@ data class Heir(val name: String, val weight: String)
 data class ParcelUi(val name: String, val sides: String, val diags: String)
 data class RoadUi(val name: String, val type: Int, val width: String, val length: String, val ben: String,
                   val burdenAll: Boolean, val deducted: Boolean, val status: Int, val parcel: Int)
+data class PlanUi(val on: Boolean = false, val parcel: Int = 0, val mode: Int = 0, val tops: String = "", val stations: Int = 6,
+                  val prec: String = "5", val rev: Boolean = false, val use: Boolean = false)
 data class EditUi(val parcel: Int, val cut: Int, val delta: Double)
 data class ProjectData(val name: String, val location: String, val notes: String, val parcels: List<ParcelUi>,
-                       val perParcel: Boolean, val cand: Int, val heirs: List<Heir>, val roads: List<RoadUi>, val edits: List<EditUi> = emptyList()) {
+                       val perParcel: Boolean, val cand: Int, val heirs: List<Heir>, val roads: List<RoadUi>, val edits: List<EditUi> = emptyList(), val plan: PlanUi = PlanUi()) {
     fun toJson(): String = JSONObject().apply {
         put("name", name); put("location", location); put("notes", notes); put("per", perParcel); put("cand", cand)
+        put("plan", JSONObject().put("on", plan.on).put("parcel", plan.parcel).put("mode", plan.mode).put("tops", plan.tops).put("st", plan.stations).put("prec", plan.prec).put("rev", plan.rev).put("use", plan.use))
         put("ed", JSONArray(edits.map { JSONObject().put("p", it.parcel).put("c", it.cut).put("d", it.delta) }))
         put("parcels", JSONArray(parcels.map { JSONObject().put("n", it.name).put("s", it.sides).put("d", it.diags) }))
         put("heirs", JSONArray(heirs.map { JSONObject().put("n", it.name).put("w", it.weight) }))
@@ -26,6 +29,8 @@ data class ProjectData(val name: String, val location: String, val notes: String
         fun fromJson(s: String): ProjectData {
             val o = JSONObject(s)
             val h = o.getJSONArray("heirs"); val r = o.getJSONArray("roads")
+            val pj = o.optJSONObject("plan")
+            val plan = if (pj == null) PlanUi() else PlanUi(pj.optBoolean("on"), pj.optInt("parcel"), pj.optInt("mode"), pj.optString("tops"), pj.optInt("st", 6), pj.optString("prec", "5"), pj.optBoolean("rev"), pj.optBoolean("use"))
             val ed = o.optJSONArray("ed")
             val edits = if (ed == null) emptyList() else (0 until ed.length()).map { ed.getJSONObject(it).let { x -> EditUi(x.getInt("p"), x.getInt("c"), x.getDouble("d")) } }
             val parcels = if (o.has("parcels")) o.getJSONArray("parcels").let { a ->
@@ -34,7 +39,7 @@ data class ProjectData(val name: String, val location: String, val notes: String
             return ProjectData(o.optString("name"), o.optString("location"), o.optString("notes"), parcels, o.optBoolean("per", false), o.optInt("cand", 0),
                 (0 until h.length()).map { h.getJSONObject(it).let { x -> Heir(x.getString("n"), x.getString("w")) } },
                 (0 until r.length()).map { r.getJSONObject(it).let { x -> RoadUi(x.getString("n"), x.getInt("t"), x.getString("w"), x.getString("l"),
-                    x.getString("b"), x.getBoolean("all"), x.getBoolean("d"), x.getInt("s"), x.optInt("pc", 0)) } }, edits)
+                    x.getString("b"), x.getBoolean("all"), x.getBoolean("d"), x.getInt("s"), x.optInt("pc", 0)) } }, edits, plan)
         }
     }
 }
@@ -44,7 +49,8 @@ val roadStatus = listOf("مقترح", "معتمد", "يحتاج مراجعة")
 
 class Row(val name: String, val gross: Double, val burden: Double, val net: Double)
 class Result(val error: String?, val polys: List<List<Pt>>, val cands: List<Candidate>, val rows: List<Row>,
-             val roadsTotal: Double, val warnings: List<String>, val total: Double, val parcels: List<ParcelIn> = emptyList())
+             val roadsTotal: Double, val warnings: List<String>, val total: Double, val parcels: List<ParcelIn> = emptyList(),
+             val roadsBy: List<List<Road>> = emptyList(), val weights: List<Double> = emptyList())
 
 fun parseNums(s: String): List<Double>? {
     val t = s.map { c -> if (c in '٠'..'٩') ('0' + (c - '٠')) else c }.joinToString("").replace('٫', '.')
@@ -97,5 +103,26 @@ fun compute(d: ProjectData): Result {
         rows = d.heirs.indices.map { i -> Row(d.heirs[i].name, per.sumOf { it.shares[i].gross }, per.sumOf { it.shares[i].roadBurden }, per.sumOf { it.shares[i].net }) }
         cands = Candidates.generate(parcels, null, per.map { r -> r.shares.map { it.net } })
     }
-    return Result(null, polys, cands, rows, roadArea.sum(), warns.distinct(), total, parcels)
+    return Result(null, polys, cands, rows, roadArea.sum(), warns.distinct(), total, parcels,
+        polys.indices.map { j -> rp.filter { it.second == j }.map { it.first } }, wl)
+}
+
+class PlanOut(val error: String?, val plan: RzPlan?, val owners: List<Int>, val targets: List<Double>)
+
+/** منظّم الرزائم لأرض رباعية: الأهداف = صافي كل وارث في هذه الأرض (بعد طرقها) ثم قطعة الطريق إن وُجدت. */
+fun computePlan(d: ProjectData, res: Result): PlanOut {
+    fun e(m: String) = PlanOut(m, null, emptyList(), emptyList())
+    if (!d.plan.on || res.error != null || res.polys.isEmpty() || res.weights.isEmpty()) return PlanOut(null, null, emptyList(), emptyList())
+    val j = d.plan.parcel.coerceIn(0, res.polys.lastIndex)
+    val quad = res.polys[j]
+    if (quad.size != 4) return e("المنظّم يعمل للأراضي الرباعية (4 نقاط) فقط")
+    val rr = RoadCalc.compute(Geo.area(quad), res.weights, res.roadsBy.getOrNull(j) ?: emptyList())
+    val er = rr.error; if (er != null) return e(er)
+    var owners = res.weights.indices.toList(); var t = rr.shares.map { it.net }
+    if (d.plan.rev) { owners = owners.reversed(); t = t.reversed() }
+    if (rr.roadsTotal > 1e-9) { owners = owners + (-1); t = t + rr.roadsTotal }
+    val widths = if (d.plan.tops.isBlank()) emptyList() else (parseNums(d.plan.tops) ?: return e("عروض الرزائم تحتوي قيمة غير رقمية"))
+    val mode = RzMode.values()[d.plan.mode.coerceIn(0, 2)]
+    val plan = Rzaim.plan(quad, t, mode, widths, (d.plan.stations - 1).coerceIn(1, 40))
+    return PlanOut(plan.error, plan, owners, t)
 }

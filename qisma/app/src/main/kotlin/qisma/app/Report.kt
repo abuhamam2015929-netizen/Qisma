@@ -62,7 +62,7 @@ private class PdfW(val doc: PdfDocument) {
     }
 }
 
-fun buildPdf(ctx: Context, d: ProjectData, res: Result, pieces: List<Piece>, label: String): File {
+fun buildPdf(ctx: Context, d: ProjectData, res: Result, pieces: List<Piece>, label: String, planOut: PlanOut? = null): File {
     val doc = PdfDocument(); val w = PdfW(doc); w.newPage()
     val nm = { o: Int -> if (o < 0) "طريق" else d.heirs.getOrNull(o)?.name ?: "؟" }
     w.text("تقرير قسمة الأراضي – ${d.name}", 18f, true, 8f)
@@ -99,6 +99,17 @@ fun buildPdf(ctx: Context, d: ProjectData, res: Result, pieces: List<Piece>, lab
         w.drawParcel(p, pj)
         pj.forEachIndexed { k, pc ->
             w.text("قطعة ${j + 1}-${k + 1} (لون ${k + 1}): ${nm(pc.owner)} | المساحة ${f(pc.area)} م² | المحيط ${f(Geo.perimeter(pc.poly))} م | الحدود: ${edgeLens(pc.poly).joinToString(" ، ") { f(it) }} م", 10f)
+        }
+    }
+    val pln = planOut?.plan
+    if (d.plan.on && planOut != null && pln != null && pln.error == null) {
+        w.text("جدول توقيع العلائم والرزائم (${d.parcels.getOrNull(d.plan.parcel)?.name ?: ""})", 14f, true)
+        pln.pieces.indices.forEach { k ->
+            w.text("قطعة ${k + 1} (${nm(planOut.owners[k])}): عرض الأعلى ${f(pln.widths[k].first)} م | عرض الأسفل ${f(pln.widths[k].second)} م | المساحة ${f(Geo.area(pln.pieces[k]))} م²", 10f)
+        }
+        pln.cuts.forEachIndexed { k, c ->
+            w.text("الرزيمة ${k + 1}: السفلي عند ${f(c.bottomPos)} م ← العلوي عند ${f(c.topPos)} م | الطول ${f(c.length)} م | الإزاحة ${f(pln.skews[k])} م", 10f, true)
+            w.text(pln.stations[k].mapIndexed { i, s -> "ع${i + 1}: ${f(s.along)} م ← ${f(s.fromLeft)} م" }.joinToString("  |  "), 9f)
         }
     }
     w.text("التحقق: مجموع القطع ${f(pieces.sumOf { it.area })} م² ويساوي إجمالي الأراضي ${f(res.total)} م².", 10f)
